@@ -28,7 +28,10 @@ export default function PolicyDetail({ user, policyId, onBack, onPolicyChange, o
 
   const inForce = policy.status === 'In Force'
   const canceled = policy.status === 'Canceled'
-  const draftLike = ['Draft', 'Quoted', 'UW Review'].includes(policy.status)
+  const draftLike = ['Draft', 'Quoted', 'UW Review', 'Approved', 'Rejected'].includes(policy.status)
+  const uwLocked =
+    user.role === 'underwriter' &&
+    (policy.submittedForApproval || ['UW Review', 'Approved', 'Rejected'].includes(policy.status))
 
   async function save(updated) {
     const saved = await api.updatePolicy(policy.id, updated)
@@ -129,7 +132,7 @@ export default function PolicyDetail({ user, policyId, onBack, onPolicyChange, o
         </div>
         <div className="spacer" />
         <div className="action-row">
-          {draftLike && (
+          {draftLike && !uwLocked && (
             <button className="btn btn-primary" onClick={() => onResume(policy.id)}>
               <PlayCircle size={16} /> Continue Submission
             </button>

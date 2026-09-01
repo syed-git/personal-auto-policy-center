@@ -7,6 +7,8 @@ export const STATUS_CLASS = {
   Draft: 'badge-gray',
   Quoted: 'badge-blue',
   'UW Review': 'badge-amber',
+  Approved: 'badge-green',
+  Rejected: 'badge-red',
   'In Force': 'badge-green',
   Canceled: 'badge-red',
   Expired: 'badge-gray',
@@ -21,7 +23,7 @@ export default function Dashboard({ user, onNewSubmission, onOpenPolicy }) {
     api.listPolicies().then(setPolicies).catch(() => setPolicies([]))
   }, [])
 
-  const statuses = ['All', 'Draft', 'Quoted', 'UW Review', 'In Force', 'Canceled', 'Expired']
+  const statuses = ['All', 'Draft', 'Quoted', 'UW Review', 'Approved', 'Rejected', 'In Force', 'Canceled', 'Expired']
 
   const filtered = (policies || []).filter((p) => {
     if (statusFilter !== 'All' && p.status !== statusFilter) return false

@@ -29,6 +29,8 @@ import {
   Pencil,
   CheckCircle2,
   XCircle,
+  Send,
+  Star,
 } from 'lucide-react'
 
 const STEPS = [
@@ -46,9 +48,11 @@ function emptyData(user) {
   return {
     type: 'submission',
     status: 'Draft',
-    effectiveDate: '',
-    expirationDate: '',
+    effectiveDate: todayStr(),
+    expirationDate: addYears(todayStr(), 1),
     insured: null,
+    insureds: [],
+    submittedForApproval: false,
     drivers: [],
     vehicles: [],
     coverages: defaultCoverages(),
@@ -61,8 +65,9 @@ function emptyData(user) {
   }
 }
 
-export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
+export default function Wizard({ user, mode, policyId, initialStep, onExit, onOpenPolicy }) {
   const [step, setStep] = useState(0)
+  const [maxStep, setMaxStep] = useState(0)
   const [data, setData] = useState(() => emptyData(user))
   const [savedId, setSavedId] = useState(null)
   const [loading, setLoading] = useState(!!policyId)
@@ -73,14 +78,34 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
   useEffect(() => {
     if (!policyId) return
     api.getPolicy(policyId).then((p) => {
+      const insureds = p.insureds || (p.insured ? [{ ...p.insured, isPrimary: true }] : [])
       setSavedId(p.id)
-      setData({ ...p })
+      setData({ ...p, insureds })
+      const inApproval =
+        p.submittedForApproval || ['UW Review', 'Approved', 'Rejected'].includes(p.status)
+      const uwReviewing = user.role === 'underwriter' && inApproval
+      const reach = uwReviewing ? 6 : p.premium ? (inApproval ? 5 : 4) : 0
+      setMaxStep(reach)
+      if (initialStep) {
+        const idx = STEPS.findIndex((s) => s.key === initialStep)
+        if (idx >= 0 && idx <= reach) setStep(idx)
+      }
       setLoading(false)
     })
   }, [policyId])
 
   const isChange = mode === 'change'
+  const isUW = user.role === 'underwriter'
   const evalRole = isChange ? user.role : data.createdByRole || user.role
+  const uwLocked =
+    isUW &&
+    !isChange &&
+    (data.submittedForApproval || ['UW Review', 'Approved', 'Rejected'].includes(data.status))
+
+  function goStep(i) {
+    setStep(i)
+    setMaxStep((m) => Math.max(m, i))
+  }
 
   function update(patch) {
     setData((d) => ({ ...d, ...patch }))
@@ -111,7 +136,10 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
     const key = STEPS[step].key
     if (key === 'policyInfo') {
       if (!data.effectiveDate) return setStepError('Effective date is required')
-      if (!data.insured) return setStepError('Please add the primary insured before continuing')
+      if (!(data.insureds || []).length)
+        return setStepError('Please add at least one insured before continuing')
+      if (!(data.insureds || []).some((i) => i.isPrimary))
+        return setStepError('One insured must be marked as the primary insured')
     }
     if (key === 'drivers' && data.drivers.length === 0)
       return setStepError('Please add at least one driver')
@@ -122,18 +150,19 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
     if (key === 'coverages') {
       d.premium = calculatePremium(d)
       d.uwIssues = reevaluateIssues(d)
-      if (d.status === 'Draft') d.status = 'Quoted'
+      if (['Draft', 'Rejected'].includes(d.status)) d.status = 'Quoted'
     }
     if (key === 'quote') {
       d.uwIssues = reevaluateIssues(d)
-      const blocked = d.uwIssues.some((i) => i.blocking && !i.approved)
-      if (!isChange) d.status = blocked ? 'UW Review' : 'Quoted'
+      if (!isChange && ['Draft', 'Rejected'].includes(d.status)) d.status = 'Quoted'
     }
     if (key === 'risk') {
       const blocked = d.uwIssues.some((i) => i.blocking && !i.approved)
       if (blocked)
         return setStepError(
-          'This submission has blocking underwriting issues. An underwriter must approve them before you can proceed.'
+          d.submittedForApproval
+            ? 'This submission is pending underwriter approval. You can proceed once the underwriter approves it.'
+            : 'This submission has blocking underwriting issues. Submit it for underwriter approval from this screen.'
         )
     }
     setData(d)
@@ -141,7 +170,40 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
       const saved = await persist(d)
       setData((cur) => ({ ...cur, ...saved }))
     }
-    setStep((s) => Math.min(s + 1, STEPS.length - 1))
+    goStep(Math.min(step + 1, STEPS.length - 1))
+  }
+
+  async function submitForApproval() {
+    const d = {
+      ...data,
+      submittedForApproval: true,
+      status: 'UW Review',
+      submittedBy: user.name,
+      submittedAt: todayStr(),
+    }
+    setData(d)
+    if (!isChange) {
+      const saved = await persist(d)
+      setData((cur) => ({ ...cur, ...saved }))
+    }
+  }
+
+  async function decide(approved) {
+    const d = {
+      ...data,
+      uwIssues: (data.uwIssues || []).map((i) =>
+        approved && !i.approved
+          ? { ...i, approved: true, approvedBy: user.name, approvedAt: todayStr() }
+          : i
+      ),
+      status: approved ? 'Approved' : 'Rejected',
+      submittedForApproval: approved,
+      ...(approved
+        ? { approvedBy: user.name, approvedAt: todayStr() }
+        : { rejectedBy: user.name, rejectedAt: todayStr() }),
+    }
+    setData(d)
+    if (savedId) await api.updatePolicy(savedId, d)
   }
 
   async function issuePolicy() {
@@ -181,7 +243,7 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
       const saved = await persist(d)
       setData((cur) => ({ ...cur, ...d, ...saved }))
     }
-    setStep(STEPS.length - 1)
+    goStep(STEPS.length - 1)
   }
 
   async function approveIssue(code) {
@@ -192,7 +254,8 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
       ),
     }
     const stillBlocked = d.uwIssues.some((i) => i.blocking && !i.approved)
-    if (!stillBlocked && d.status === 'UW Review') d.status = 'Quoted'
+    if (!stillBlocked && d.status === 'UW Review')
+      d.status = d.submittedForApproval ? 'Approved' : 'Quoted'
     setData(d)
     if (!isChange && savedId) await api.updatePolicy(savedId, d)
   }
@@ -269,8 +332,8 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
               <button
                 key={s.key}
                 className={`step ${state}`}
-                onClick={() => i < step && !issued && setStep(i)}
-                disabled={i > step}
+                onClick={() => i <= maxStep && !issued && setStep(i)}
+                disabled={i > maxStep || issued}
               >
                 <span className="step-icon">
                   <Icon size={16} />
@@ -282,6 +345,29 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
         </aside>
 
         <section className="wizard-content" key={step}>
+          {!issued && blockingUnapproved.length > 0 && !data.submittedForApproval && data.status !== 'Rejected' && (
+            <div className="banner-note banner-warn animate-rise">
+              <AlertTriangle size={16} /> Underwriting issue(s) have been created on this submission.
+              Review them on the Risk Analysis screen and submit for underwriter approval.
+            </div>
+          )}
+          {!issued && data.submittedForApproval && data.status === 'UW Review' && (
+            <div className="banner-note banner-info animate-rise">
+              <Send size={16} /> Submitted for approval — pending underwriter review.
+            </div>
+          )}
+          {!issued && data.status === 'Approved' && (
+            <div className="banner-note banner-success animate-rise">
+              <CheckCircle2 size={16} /> Approved by {data.approvedBy || 'underwriter'} — you can now
+              proceed to issue this policy.
+            </div>
+          )}
+          {!issued && data.status === 'Rejected' && (
+            <div className="banner-note banner-danger animate-rise">
+              <XCircle size={16} /> Rejected by {data.rejectedBy || 'underwriter'}. Update the
+              submission and resubmit for approval.
+            </div>
+          )}
           <StepComp
             data={data}
             update={update}
@@ -289,6 +375,9 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
             isChange={isChange}
             approveIssue={approveIssue}
             blockingUnapproved={blockingUnapproved}
+            submitForApproval={submitForApproval}
+            decide={decide}
+            uwLocked={uwLocked}
             onOpenPolicy={() => onOpenPolicy(savedId || data.id)}
             onExit={onExit}
           />
@@ -304,12 +393,20 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
               </button>
             )}
             <div className="spacer" />
-            {step < STEPS.length - 2 && (
+            {step < STEPS.length - 2 && !uwLocked && (
               <button className="btn btn-primary" onClick={next}>
-                Next <ChevronRight size={16} />
+                {STEPS[step].key === 'coverages' ? (
+                  <>
+                    <Calculator size={16} /> Generate Quote
+                  </>
+                ) : (
+                  <>
+                    Next <ChevronRight size={16} />
+                  </>
+                )}
               </button>
             )}
-            {STEPS[step].key === 'review' && (
+            {STEPS[step].key === 'review' && !uwLocked && (
               <button className="btn btn-success" onClick={issuePolicy}>
                 <CheckCircle2 size={16} /> {isChange ? 'Issue Policy Change' : 'Issue Policy'}
               </button>
@@ -324,48 +421,84 @@ export default function Wizard({ user, mode, policyId, onExit, onOpenPolicy }) {
 /* ---------------- Step 1: Policy Info ---------------- */
 
 function StepPolicyInfo({ data, update }) {
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState(data.insured || {})
+  const [editing, setEditing] = useState(null) // index | 'new' | null
+  const [form, setForm] = useState({})
   const [errors, setErrors] = useState({})
+
+  const insureds = data.insureds || []
+
+  function apply(list) {
+    update({ insureds: list, insured: list.find((p) => p.isPrimary) || null })
+  }
 
   function saveInsured() {
     const errs = validateInsured(form)
     setErrors(errs)
     if (Object.keys(errs).length) return
-    update({ insured: { ...form } })
-    setShowForm(false)
+    let list = [...insureds]
+    if (editing === 'new') list.push({ ...form })
+    else list[editing] = { ...form }
+    const idx = editing === 'new' ? list.length - 1 : editing
+    if (list[idx].isPrimary) list = list.map((p, i) => ({ ...p, isPrimary: i === idx }))
+    else if (!list.some((p) => p.isPrimary)) list[idx] = { ...list[idx], isPrimary: true }
+    apply(list)
+    setEditing(null)
+  }
+
+  function removeInsured(i) {
+    const list = insureds.filter((_, j) => j !== i)
+    if (list.length && !list.some((p) => p.isPrimary)) list[0] = { ...list[0], isPrimary: true }
+    apply(list)
+  }
+
+  function makePrimary(i) {
+    apply(insureds.map((p, j) => ({ ...p, isPrimary: j === i })))
   }
 
   return (
     <div className="animate-rise">
       <h2>Policy Information</h2>
-      <p className="muted">Set the policy effective date and add the primary insured.</p>
+      <p className="muted">
+        Set the policy effective date and add the insureds. Exactly one insured must be primary.
+      </p>
 
       <div className="card">
-        <div className="field" style={{ maxWidth: 280 }}>
-          <label>
-            Effective Date <span className="req">*</span>
-          </label>
-          <input
-            type="date"
-            value={data.effectiveDate}
-            onChange={(e) => update({ effectiveDate: e.target.value })}
-          />
-          <span className="field-hint">
-            Backdating more than 90 days creates an underwriting issue requiring approval.
-          </span>
+        <div className="form-grid">
+          <div className="field" style={{ maxWidth: 280 }}>
+            <label>
+              Effective Date <span className="req">*</span>
+            </label>
+            <input
+              type="date"
+              value={data.effectiveDate}
+              onChange={(e) =>
+                update({
+                  effectiveDate: e.target.value,
+                  expirationDate: e.target.value ? addYears(e.target.value, 1) : '',
+                })
+              }
+            />
+            <span className="field-hint">
+              Backdating more than 90 days creates an underwriting issue requiring approval.
+            </span>
+          </div>
+          <div className="field" style={{ maxWidth: 280 }}>
+            <label>Expiration Date</label>
+            <input type="date" value={data.expirationDate || ''} readOnly disabled />
+            <span className="field-hint">Automatically calculated — 12-month term.</span>
+          </div>
         </div>
       </div>
 
       <div className="section-head">
-        <h3>Primary Insured</h3>
-        {!data.insured && !showForm && (
+        <h3>Insureds ({insureds.length})</h3>
+        {editing === null && (
           <button
             className="btn btn-secondary"
             onClick={() => {
-              setForm({})
+              setForm({ isPrimary: insureds.length === 0 })
               setErrors({})
-              setShowForm(true)
+              setEditing('new')
             }}
           >
             <Plus size={16} /> Add Insured
@@ -373,40 +506,57 @@ function StepPolicyInfo({ data, update }) {
         )}
       </div>
 
-      {data.insured && !showForm && (
-        <div className="card person-card animate-rise">
+      {insureds.map((ins, i) => (
+        <div key={i} className="card person-card animate-rise">
           <div className="person-avatar">
-            {data.insured.firstName?.[0]}
-            {data.insured.lastName?.[0]}
+            {ins.firstName?.[0]}
+            {ins.lastName?.[0]}
           </div>
           <div className="person-info">
             <strong>
-              {data.insured.firstName} {data.insured.lastName}
+              {ins.firstName} {ins.lastName}{' '}
+              {ins.isPrimary && <span className="tag">Primary Insured</span>}
             </strong>
             <span className="muted">
-              DOB {fmtDate(data.insured.dateOfBirth)} · {data.insured.gender}
-              {data.insured.email ? ` · ${data.insured.email}` : ''}
+              DOB {fmtDate(ins.dateOfBirth)} · {ins.gender}
+              {ins.email ? ` · ${ins.email}` : ''}
             </span>
             <span className="muted">
-              {[data.insured.address, data.insured.city, data.insured.state, data.insured.zip]
-                .filter(Boolean)
-                .join(', ') || 'No address on file'}
+              {[ins.address, ins.city, ins.state, ins.zip].filter(Boolean).join(', ') ||
+                'No address on file'}
             </span>
           </div>
-          <button
-            className="btn btn-ghost"
-            onClick={() => {
-              setForm(data.insured)
-              setErrors({})
-              setShowForm(true)
-            }}
-          >
-            <Pencil size={15} /> Edit
-          </button>
+          <div className="row-actions">
+            {!ins.isPrimary && (
+              <button className="btn btn-ghost" onClick={() => makePrimary(i)}>
+                <Star size={15} /> Make Primary
+              </button>
+            )}
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setForm(ins)
+                setErrors({})
+                setEditing(i)
+              }}
+            >
+              <Pencil size={15} />
+            </button>
+            <button className="btn btn-ghost danger" onClick={() => removeInsured(i)}>
+              <Trash2 size={15} />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {insureds.length === 0 && editing === null && (
+        <div className="empty-state small">
+          <Users size={28} />
+          <p>No insureds added yet.</p>
         </div>
       )}
 
-      {showForm && (
+      {editing !== null && (
         <div className="card form-card animate-rise">
           <div className="form-grid">
             <Field label="First Name" required error={errors.firstName}>
@@ -479,15 +629,16 @@ function StepPolicyInfo({ data, update }) {
               <label className="radio">
                 <input
                   type="checkbox"
-                  checked={form.isPrimary ?? true}
+                  checked={form.isPrimary || false}
                   onChange={(e) => setForm({ ...form, isPrimary: e.target.checked })}
                 />
                 This person is the primary insured
               </label>
+              <span className="field-hint">Only one insured can be primary.</span>
             </Field>
           </div>
           <div className="form-actions">
-            <button className="btn btn-ghost" onClick={() => setShowForm(false)}>
+            <button className="btn btn-ghost" onClick={() => setEditing(null)}>
               Cancel
             </button>
             <button className="btn btn-primary" onClick={saveInsured}>
@@ -502,10 +653,36 @@ function StepPolicyInfo({ data, update }) {
 
 /* ---------------- Step 2: Drivers ---------------- */
 
+const MAX_LICENSE_FILE_BYTES = 5 * 1024 * 1024
+
 function StepDrivers({ data, update }) {
   const [editing, setEditing] = useState(null) // index or 'new'
   const [form, setForm] = useState({})
   const [errors, setErrors] = useState({})
+
+  function handleLicenseFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (file.type !== 'application/pdf') {
+      setErrors((er) => ({ ...er, licenseFile: 'Only PDF files are accepted' }))
+      e.target.value = ''
+      return
+    }
+    if (file.size > MAX_LICENSE_FILE_BYTES) {
+      setErrors((er) => ({ ...er, licenseFile: 'File must be 5 MB or smaller' }))
+      e.target.value = ''
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setForm((f) => ({
+        ...f,
+        licenseFile: { name: file.name, size: file.size, dataUrl: reader.result },
+      }))
+      setErrors((er) => ({ ...er, licenseFile: undefined }))
+    }
+    reader.readAsDataURL(file)
+  }
 
   function saveDriver() {
     const errs = validateDriver(form)
@@ -555,6 +732,7 @@ function StepDrivers({ data, update }) {
             <span className="muted">
               {d.yearsLicensed || 0} yrs licensed · {d.accidents || 0} accidents ·{' '}
               {d.violations || 0} violations
+              {d.licenseFile ? ` · License PDF: ${d.licenseFile.name}` : ''}
             </span>
           </div>
           <div className="row-actions">
@@ -672,6 +850,14 @@ function StepDrivers({ data, update }) {
                   <option key={r}>{r}</option>
                 ))}
               </select>
+            </Field>
+            <Field label="Driver's License (PDF, max 5 MB)" error={errors.licenseFile}>
+              <input type="file" accept="application/pdf" onChange={handleLicenseFile} />
+              {form.licenseFile && (
+                <span className="field-hint">
+                  {form.licenseFile.name} ({(form.licenseFile.size / 1024 / 1024).toFixed(2)} MB)
+                </span>
+              )}
             </Field>
           </div>
           <div className="form-actions">
@@ -969,8 +1155,11 @@ function StepQuote({ data }) {
 
 /* ---------------- Step 6: Risk Analysis ---------------- */
 
-function StepRisk({ data, user, approveIssue }) {
+function StepRisk({ data, user, approveIssue, submitForApproval, decide }) {
   const issues = data.uwIssues || []
+  const isUW = user.role === 'underwriter'
+  const blocking = issues.some((i) => i.blocking && !i.approved)
+  const issued = data.status === 'In Force' || data.status === 'Canceled'
   return (
     <div className="animate-rise">
       <h2>Risk Analysis</h2>
@@ -998,13 +1187,30 @@ function StepRisk({ data, user, approveIssue }) {
                 <span className="tag blocking-tag">Blocking — underwriter approval required</span>
               )}
             </div>
-            {!iss.approved && user.role === 'underwriter' && (
+            {!iss.approved && isUW && data.submittedForApproval && (
               <button className="btn btn-success" onClick={() => approveIssue(iss.code)}>
                 <CheckCircle2 size={15} /> Approve
               </button>
             )}
           </div>
         ))
+      )}
+      {!issued && !isUW && blocking && !data.submittedForApproval && (
+        <div className="form-actions">
+          <button className="btn btn-primary" onClick={submitForApproval}>
+            <Send size={16} /> Submit for Approval
+          </button>
+        </div>
+      )}
+      {!issued && isUW && data.submittedForApproval && data.status === 'UW Review' && (
+        <div className="form-actions">
+          <button className="btn btn-danger" onClick={() => decide(false)}>
+            <XCircle size={16} /> Reject
+          </button>
+          <button className="btn btn-success" onClick={() => decide(true)}>
+            <CheckCircle2 size={16} /> Approve
+          </button>
+        </div>
       )}
     </div>
   )
@@ -1035,22 +1241,19 @@ export function ReviewBlocks({ data, premium }) {
           <KV k="Total Premium" v={fmtMoney(premium?.total)} />
         </div>
         <div className="card">
-          <h3>Primary Insured</h3>
-          {data.insured && (
-            <>
-              <KV k="Name" v={`${data.insured.firstName} ${data.insured.lastName}`} />
-              <KV k="DOB" v={fmtDate(data.insured.dateOfBirth)} />
-              <KV k="Gender" v={data.insured.gender} />
-              <KV
-                k="Address"
-                v={
-                  [data.insured.address, data.insured.city, data.insured.state, data.insured.zip]
-                    .filter(Boolean)
-                    .join(', ') || '—'
-                }
-              />
-            </>
-          )}
+          <h3>Insureds</h3>
+          {(data.insureds?.length
+            ? data.insureds
+            : data.insured
+              ? [{ ...data.insured, isPrimary: true }]
+              : []
+          ).map((ins, i) => (
+            <KV
+              key={i}
+              k={`${ins.firstName} ${ins.lastName}${ins.isPrimary ? ' (Primary)' : ''}`}
+              v={`DOB ${fmtDate(ins.dateOfBirth)} · ${ins.gender || '—'}`}
+            />
+          ))}
         </div>
       </div>
       <div className="card">

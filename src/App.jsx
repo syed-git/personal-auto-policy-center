@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { api } from './lib/api.js'
 import Login from './components/Login.jsx'
 import Dashboard from './components/Dashboard.jsx'
 import Wizard from './components/Wizard.jsx'
@@ -19,6 +20,17 @@ export default function App() {
     if (user) sessionStorage.setItem('pc_user', JSON.stringify(user))
     else sessionStorage.removeItem('pc_user')
   }, [user])
+
+  useEffect(() => {
+    api
+      .getBoot()
+      .then(({ bootId }) => {
+        const prev = sessionStorage.getItem('pc_boot')
+        if (prev && prev !== bootId) setUser(null)
+        sessionStorage.setItem('pc_boot', bootId)
+      })
+      .catch(() => {})
+  }, [])
 
   if (!user) return <Login onLogin={setUser} />
 
@@ -53,7 +65,11 @@ export default function App() {
           <Dashboard
             user={user}
             onNewSubmission={() => setView({ name: 'wizard', mode: 'submission' })}
-            onOpenPolicy={(policy) => setView({ name: 'policy', policyId: policy.id })}
+            onOpenPolicy={(policy) => {
+              if (['UW Review', 'Approved', 'Rejected'].includes(policy.status))
+                setView({ name: 'wizard', mode: 'submission', policyId: policy.id, initialStep: 'risk' })
+              else setView({ name: 'policy', policyId: policy.id })
+            }}
           />
         )}
         {view.name === 'wizard' && (
@@ -61,6 +77,7 @@ export default function App() {
             user={user}
             mode={view.mode}
             policyId={view.policyId}
+            initialStep={view.initialStep}
             onExit={() => setView({ name: 'dashboard' })}
             onOpenPolicy={(id) => setView({ name: 'policy', policyId: id })}
           />

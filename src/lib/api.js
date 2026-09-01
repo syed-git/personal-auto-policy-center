@@ -11,6 +11,7 @@ async function request(method, path, body) {
 
 export const api = {
   login: (username, password) => request('POST', '/login', { username, password }),
+  getBoot: () => request('GET', '/boot'),
   listPolicies: () => request('GET', '/policies'),
   getPolicy: (id) => request('GET', `/policies/${id}`),
   createPolicy: (data) => request('POST', '/policies', data),
