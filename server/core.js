@@ -20,8 +20,17 @@ const USERS = [
 
 const EMPTY_DB = { counter: 1000000, policies: [] }
 
+// Regenerated on every server (re)start; clients compare it to their stored
+// value and log out when it changes.
+const BOOT_ID =
+  globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`
+
 export async function handleApi(method, path, body, storage) {
   const parts = path.split('/').filter(Boolean) // e.g. ['policies', 'id']
+
+  if (method === 'GET' && parts[0] === 'boot') {
+    return { status: 200, body: { bootId: BOOT_ID } }
+  }
 
   if (method === 'POST' && parts[0] === 'login') {
     const user = USERS.find(
