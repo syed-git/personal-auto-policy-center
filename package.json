@@ -7,7 +7,7 @@
     "dev": "node server/index.js",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "NODE_ENV=production node server/index.js"
+    "start": "set NODE_ENV=production&& node server/index.js"
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.0",
@@ -18,6 +18,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^10.1.0",
     "vite": "^6.0.5"
   }
 }

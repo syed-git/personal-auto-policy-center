@@ -38,10 +38,10 @@ const port = process.env.PORT || 3000
 if (isProd) {
   app.use(express.static(path.join(root, 'dist')))
   app.get(/.*/, (_req, res) => res.sendFile(path.join(root, 'dist', 'index.html')))
-  app.listen(port, () => console.log(`PolicyCenter running at http://localhost:${port}`))
+  app.listen(port, '0.0.0.0', () => console.log(`PolicyCenter running at http://localhost:${port}`))
 } else {
   const { createServer } = await import('vite')
   const vite = await createServer({ root, server: { middlewareMode: true }, appType: 'spa' })
   app.use(vite.middlewares)
-  app.listen(port, () => console.log(`PolicyCenter (dev) running at http://localhost:${port}`))
+  app.listen(port, '0.0.0.0', () => console.log(`PolicyCenter (dev) running at http://localhost:${port}`))
 }
