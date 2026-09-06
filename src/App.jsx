@@ -68,6 +68,8 @@ export default function App() {
             onOpenPolicy={(policy) => {
               if (['UW Review', 'Approved', 'Rejected'].includes(policy.status))
                 setView({ name: 'wizard', mode: 'submission', policyId: policy.id, initialStep: 'risk' })
+              else if (policy.pendingChange)
+                setView({ name: 'wizard', mode: 'change', policyId: policy.id, initialStep: 'risk' })
               else setView({ name: 'policy', policyId: policy.id })
             }}
           />

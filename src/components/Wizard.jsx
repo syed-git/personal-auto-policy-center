@@ -44,6 +44,28 @@ const STEPS = [
   { key: 'summary', label: 'Policy Summary', icon: Award },
 ]
 
+function startChange(p, user) {
+  return {
+    ...p,
+    status: 'Draft',
+    submittedForApproval: false,
+    submittedBy: null,
+    submittedAt: null,
+    approvedBy: null,
+    approvedAt: null,
+    rejectedBy: null,
+    rejectedAt: null,
+    changedByRole: user.role,
+    changedBy: user.name,
+  }
+}
+
+// The pending change is stored on the in-force policy until it is issued.
+function changeSnapshot(d) {
+  const { id, policyNumber, transactions, pendingChange, createdAt, updatedAt, boundAt, ...rest } = d
+  return rest
+}
+
 function emptyData(user) {
   return {
     type: 'submission',
@@ -77,7 +99,16 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
 
   useEffect(() => {
     if (!policyId) return
-    api.getPolicy(policyId).then((p) => {
+    api.getPolicy(policyId).then((policy) => {
+      let p = policy
+      if (mode === 'change') {
+        if (policy.pendingChange) {
+          p = { ...policy, ...policy.pendingChange }
+          setChangeDateModal(false)
+        } else {
+          p = startChange(policy, user)
+        }
+      }
       const insureds = p.insureds || (p.insured ? [{ ...p.insured, isPrimary: true }] : [])
       setSavedId(p.id)
       setData({ ...p, insureds })
@@ -96,11 +127,10 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
 
   const isChange = mode === 'change'
   const isUW = user.role === 'underwriter'
-  const evalRole = isChange ? user.role : data.createdByRole || user.role
+  const evalRole = (isChange ? data.changedByRole : data.createdByRole) || user.role
   const uwLocked =
-    isUW &&
-    !isChange &&
-    (data.submittedForApproval || ['UW Review', 'Approved', 'Rejected'].includes(data.status))
+    isUW && (data.submittedForApproval || ['UW Review', 'Approved', 'Rejected'].includes(data.status))
+  const jobLabel = isChange ? 'policy change' : 'submission'
 
   function goStep(i) {
     setStep(i)
@@ -121,13 +151,24 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
   }
 
   async function persist(d) {
-    if (isChange) return d // policy changes are only saved when issued
+    if (isChange) return d // policy changes are only applied when issued
     if (savedId) {
       return await api.updatePolicy(savedId, d)
     }
     const created = await api.createPolicy(d)
     setSavedId(created.id)
     return created
+  }
+
+  // Saves the in-progress change on the policy so the underwriter can review it.
+  async function persistPendingChange(d) {
+    await api.updatePolicy(savedId, { pendingChange: changeSnapshot(d) })
+  }
+
+  async function persistReview(d) {
+    if (!savedId) return
+    if (isChange) await persistPendingChange(d)
+    else await api.updatePolicy(savedId, d)
   }
 
   const blockingUnapproved = (data.uwIssues || []).filter((i) => i.blocking && !i.approved)
@@ -154,15 +195,15 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
     }
     if (key === 'quote') {
       d.uwIssues = reevaluateIssues(d)
-      if (!isChange && ['Draft', 'Rejected'].includes(d.status)) d.status = 'Quoted'
+      if (['Draft', 'Rejected'].includes(d.status)) d.status = 'Quoted'
     }
     if (key === 'risk') {
       const blocked = d.uwIssues.some((i) => i.blocking && !i.approved)
       if (blocked)
         return setStepError(
           d.submittedForApproval
-            ? 'This submission is pending underwriter approval. You can proceed once the underwriter approves it.'
-            : 'This submission has blocking underwriting issues. Submit it for underwriter approval from this screen.'
+            ? `This ${jobLabel} is pending underwriter approval. You can proceed once the underwriter approves it.`
+            : `This ${jobLabel} has blocking underwriting issues. Submit it for underwriter approval from this screen.`
         )
     }
     setData(d)
@@ -182,7 +223,9 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
       submittedAt: todayStr(),
     }
     setData(d)
-    if (!isChange) {
+    if (isChange) {
+      await persistPendingChange(d)
+    } else {
       const saved = await persist(d)
       setData((cur) => ({ ...cur, ...saved }))
     }
@@ -203,7 +246,7 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
         : { rejectedBy: user.name, rejectedAt: todayStr() }),
     }
     setData(d)
-    if (savedId) await api.updatePolicy(savedId, d)
+    await persistReview(d)
   }
 
   async function issuePolicy() {
@@ -225,6 +268,7 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
         },
       ]
       d.status = 'In Force'
+      d.pendingChange = null
       const saved = await api.updatePolicy(savedId, d)
       setData(saved)
     } else {
@@ -257,7 +301,7 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
     if (!stillBlocked && d.status === 'UW Review')
       d.status = d.submittedForApproval ? 'Approved' : 'Quoted'
     setData(d)
-    if (!isChange && savedId) await api.updatePolicy(savedId, d)
+    await persistReview(d)
   }
 
   if (loading) return <div className="empty-state">Loading…</div>
@@ -347,7 +391,7 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
         <section className="wizard-content" key={step}>
           {!issued && blockingUnapproved.length > 0 && !data.submittedForApproval && data.status !== 'Rejected' && (
             <div className="banner-note banner-warn animate-rise">
-              <AlertTriangle size={16} /> Underwriting issue(s) have been created on this submission.
+              <AlertTriangle size={16} /> Underwriting issue(s) have been created on this {jobLabel}.
               Review them on the Risk Analysis screen and submit for underwriter approval.
             </div>
           )}
@@ -359,13 +403,13 @@ export default function Wizard({ user, mode, policyId, initialStep, onExit, onOp
           {!issued && data.status === 'Approved' && (
             <div className="banner-note banner-success animate-rise">
               <CheckCircle2 size={16} /> Approved by {data.approvedBy || 'underwriter'} — you can now
-              proceed to issue this policy.
+              proceed to issue this {jobLabel}.
             </div>
           )}
           {!issued && data.status === 'Rejected' && (
             <div className="banner-note banner-danger animate-rise">
-              <XCircle size={16} /> Rejected by {data.rejectedBy || 'underwriter'}. Update the
-              submission and resubmit for approval.
+              <XCircle size={16} /> Rejected by {data.rejectedBy || 'underwriter'}. Update the{' '}
+              {jobLabel} and resubmit for approval.
             </div>
           )}
           <StepComp
@@ -1155,7 +1199,7 @@ function StepQuote({ data }) {
 
 /* ---------------- Step 6: Risk Analysis ---------------- */
 
-function StepRisk({ data, user, approveIssue, submitForApproval, decide }) {
+function StepRisk({ data, user, isChange, approveIssue, submitForApproval, decide }) {
   const issues = data.uwIssues || []
   const isUW = user.role === 'underwriter'
   const blocking = issues.some((i) => i.blocking && !i.approved)
@@ -1163,12 +1207,14 @@ function StepRisk({ data, user, approveIssue, submitForApproval, decide }) {
   return (
     <div className="animate-rise">
       <h2>Risk Analysis</h2>
-      <p className="muted">Underwriting issues detected for this submission.</p>
+      <p className="muted">
+        Underwriting issues detected for this {isChange ? 'policy change' : 'submission'}.
+      </p>
       {issues.length === 0 ? (
         <div className="empty-state small success">
           <CheckCircle2 size={32} />
           <h3>No underwriting issues</h3>
-          <p>This submission is clear to proceed.</p>
+          <p>This {isChange ? 'policy change' : 'submission'} is clear to proceed.</p>
         </div>
       ) : (
         issues.map((iss, i) => (
@@ -1284,12 +1330,12 @@ export function ReviewBlocks({ data, premium }) {
 
 /* ---------------- Step 8: Policy Summary ---------------- */
 
-function StepSummary({ data, onOpenPolicy }) {
+function StepSummary({ data, isChange, onOpenPolicy }) {
   return (
     <div className="animate-rise summary-step">
       <div className="summary-hero animate-pop">
         <Award size={40} />
-        <h2>Policy {data.status === 'In Force' ? 'In Force' : data.status}</h2>
+        <h2>{isChange ? 'Policy Change Issued' : `Policy ${data.status}`}</h2>
         <div className="summary-policy-num">{data.policyNumber}</div>
         <p>
           {fmtDate(data.effectiveDate)} — {fmtDate(data.expirationDate)} ·{' '}
