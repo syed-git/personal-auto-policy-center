@@ -25,15 +25,18 @@ export default function Dashboard({ user, onNewSubmission, onOpenPolicy }) {
 
   const statuses = ['All', 'Draft', 'Quoted', 'UW Review', 'Approved', 'Rejected', 'In Force', 'Canceled', 'Expired']
 
+  const hasStatus = (p, s) => p.status === s || p.pendingChange?.status === s
+
   const filtered = (policies || []).filter((p) => {
-    if (statusFilter !== 'All' && p.status !== statusFilter) return false
+    if (statusFilter !== 'All' && !hasStatus(p, statusFilter)) return false
     const q = query.trim().toLowerCase()
     if (!q) return true
     const insured = `${p.insured?.firstName || ''} ${p.insured?.lastName || ''}`.toLowerCase()
     return (
       p.policyNumber.toLowerCase().includes(q) ||
       insured.includes(q) ||
-      (p.status || '').toLowerCase().includes(q)
+      (p.status || '').toLowerCase().includes(q) ||
+      (p.pendingChange?.status || '').toLowerCase().includes(q)
     )
   })
 
@@ -52,7 +55,7 @@ export default function Dashboard({ user, onNewSubmission, onOpenPolicy }) {
       <div className="stats-row">
         {['In Force', 'UW Review', 'Draft', 'Canceled'].map((s) => (
           <div key={s} className="stat-card animate-rise">
-            <div className="stat-value">{(policies || []).filter((p) => p.status === s).length}</div>
+            <div className="stat-value">{(policies || []).filter((p) => hasStatus(p, s)).length}</div>
             <div className="stat-label">{s}</div>
           </div>
         ))}
@@ -111,6 +114,13 @@ export default function Dashboard({ user, onNewSubmission, onOpenPolicy }) {
               <span>{p.premium?.total ? fmtMoney(p.premium.total) : '—'}</span>
               <span>
                 <span className={`badge ${STATUS_CLASS[p.status] || 'badge-gray'}`}>{p.status}</span>
+                {p.pendingChange && (
+                  <span
+                    className={`badge badge-stack ${STATUS_CLASS[p.pendingChange.status] || 'badge-gray'}`}
+                  >
+                    Change · {p.pendingChange.status}
+                  </span>
+                )}
               </span>
             </div>
           ))}

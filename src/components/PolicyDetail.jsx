@@ -12,6 +12,7 @@ import {
   History,
   PlayCircle,
   CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react'
 
 export default function PolicyDetail({ user, policyId, onBack, onPolicyChange, onResume }) {
@@ -28,6 +29,7 @@ export default function PolicyDetail({ user, policyId, onBack, onPolicyChange, o
 
   const inForce = policy.status === 'In Force'
   const canceled = policy.status === 'Canceled'
+  const pendingChange = policy.pendingChange
   const draftLike = ['Draft', 'Quoted', 'UW Review', 'Approved', 'Rejected'].includes(policy.status)
   const uwLocked =
     user.role === 'underwriter' &&
@@ -140,7 +142,7 @@ export default function PolicyDetail({ user, policyId, onBack, onPolicyChange, o
           {inForce && (
             <>
               <button className="btn btn-secondary" onClick={() => onPolicyChange(policy.id)}>
-                <Pencil size={15} /> Policy Change
+                <Pencil size={15} /> {pendingChange ? 'Open Pending Change' : 'Policy Change'}
               </button>
               <button className="btn btn-secondary" onClick={doRenew}>
                 <RefreshCw size={15} /> Renew
@@ -164,6 +166,15 @@ export default function PolicyDetail({ user, policyId, onBack, onPolicyChange, o
           )}
         </div>
       </div>
+
+      {pendingChange && (
+        <div className="banner-note banner-warn animate-rise">
+          <AlertTriangle size={16} /> A policy change effective {fmtDate(pendingChange.effectiveDate)} is{' '}
+          <strong>{pendingChange.status}</strong>
+          {pendingChange.submittedBy ? ` — submitted by ${pendingChange.submittedBy}` : ''}. The
+          change is not applied to this policy until it is issued.
+        </div>
+      )}
 
       {policy.cancellation && canceled && (
         <div className="card cancel-banner animate-rise">

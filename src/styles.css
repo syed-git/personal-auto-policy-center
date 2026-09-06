@@ -217,6 +217,7 @@ input:focus, select:focus, textarea:focus {
 .badge-amber { background: var(--amber-soft); color: var(--amber); }
 .badge-blue { background: #e5f0ff; color: #1d4ed8; }
 .badge-gray { background: #eef0f4; color: var(--muted); }
+.badge-stack { display: block; margin-top: 4px; width: fit-content; }
 
 .empty-state {
   text-align: center; padding: 60px 20px; color: var(--muted);
